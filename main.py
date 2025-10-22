@@ -226,7 +226,7 @@ async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # Get all active jobs from the JobQueue based on the tracked names
     all_jobs = []
     for job_name in USER_JOBS[chat_id]:
-        jobs = context.job_queue.get_jobs_by_name(name=job_name)
+        jobs = context.application.job_queue.get_jobs_by_name(name=job_name)
         if jobs:
             all_jobs.extend(jobs)
 
