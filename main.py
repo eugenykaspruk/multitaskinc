@@ -18,6 +18,9 @@ from telegram.ext import (
 
 USER_JOBS: Dict[int, List[str]] = {}
 USER_TIMEZONE = timezone('Europe/Kyiv')
+PORT = int(os.environ.get('PORT', '8443')) # Render will provide this PORT
+WEBHOOK_URL_PATH = os.environ.get('WEBHOOK_URL_PATH', '')
+WEBHOOK_DOMAIN = os.environ.get('WEBHOOK_DOMAIN') # The base URL for your Render app
 
 # State constants for ConversationHandler
 GET_EVENT_NAME, GET_EVENT_DATETIME, GET_REMINDER_OFFSET = range(3)
@@ -123,8 +126,8 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     # Note: reminder_offset is correctly handled by the runtime logic,
     # even without the Union syntax in the function signature here.
     if reminder_offset is None:
-        await update.message.reply_text(
-            "❌ Invalid reminder format. Please use `1h`, `30m`, or `0m`:"
+        await update.message.reply_html(
+            "❌ Invalid reminder format. Please use <code>1h</code>, <code>30m</code>, or <code>0m</code>:"
         )
         return GET_REMINDER_OFFSET  # Stay on this step
 
@@ -283,9 +286,21 @@ def main() -> None:
     application.add_handler(CommandHandler("list", list_tasks))
     application.add_handler(conv_handler)
 
+    if not WEBHOOK_DOMAIN:
+        logger.error("WEBHOOK_DOMAIN environment variable is not set. Cannot run webhooks.")
+        # Fallback to polling for local testing if needed
+        # application.run_polling(allowed_updates=Update.ALL_TYPES)
+        return
+
     # Start the bot
     logger.info("Bot started. Waiting for commands...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=WEBHOOK_URL_PATH,
+        webhook_url=f"https://{WEBHOOK_DOMAIN}/{WEBHOOK_URL_PATH}",
+        # We don't need SSL certificate files on Render/Heroku as they handle the SSL termination.
+    )
 
 
 if __name__ == "__main__":
