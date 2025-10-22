@@ -256,7 +256,13 @@ async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 def main() -> None:
     """Starts the bot."""
 
-    TOKEN = "8233665524:AAFEocoUOOELeQBIwPifMTsv_ONLKhtxJ34"
+    # Retrieve token from environment variable (Best Practice)
+    TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+
+    # Fallback to a hardcoded example if env var is missing (MUST BE REPLACED!)
+    if not TOKEN:
+        logger.warning("TELEGRAM_BOT_TOKEN environment variable not found. Using example token. REPLACE THIS!")
+        TOKEN = "8233665524:AAFEocoUOOELeQBIwPifMTsv_ONLKhtxJ34"
 
     # Create the Application instance
     application = Application.builder().token(TOKEN).build()
