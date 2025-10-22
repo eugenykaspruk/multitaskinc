@@ -13,10 +13,10 @@ from telegram.ext import (
     ContextTypes,
     ConversationHandler,
 )
+import firebase_admin
+from firebase_admin import credentials, db
 
 # 1. Configuration and Global Storage
-
-USER_JOBS: Dict[int, List[str]] = {}
 USER_TIMEZONE = timezone('Europe/Kyiv')
 PORT = int(os.environ.get('PORT', '8443')) # Render will provide this PORT
 WEBHOOK_URL_PATH = os.environ.get('WEBHOOK_URL_PATH', '')
@@ -118,18 +118,15 @@ async def get_event_datetime(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Parses reminder offset, calculates time, and schedules the Job."""
+    """Parses reminder offset, calculates time, schedules the job, and stores it in Firebase."""
 
-    # 1. Parse the offset (timedelta)
+    # 1. Parse the offset
     reminder_offset = parse_timedelta(update.message.text)
-
-    # Note: reminder_offset is correctly handled by the runtime logic,
-    # even without the Union syntax in the function signature here.
     if reminder_offset is None:
         await update.message.reply_html(
             "❌ Invalid reminder format. Please use <code>1h</code>, <code>30m</code>, or <code>0m</code>:"
         )
-        return GET_REMINDER_OFFSET  # Stay on this step
+        return GET_REMINDER_OFFSET
 
     # 2. Calculate reminder time
     event_time: datetime = context.user_data["event_time"]
@@ -137,26 +134,23 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     chat_id = update.effective_chat.id
 
     if reminder_time < datetime.now(USER_TIMEZONE):
-        await update.message.reply_text(
-            "❌ The calculated reminder time has already passed! Please try a smaller offset or reschedule the event."
-        )
+        await update.message.reply_text("❌ The calculated reminder time has already passed! Please try again.")
         return GET_REMINDER_OFFSET
 
-    # 3. Plan the Reminder (JobQueue)
+    # 3. Schedule the reminder and store it
     event_name: str = context.user_data["event_name"]
-    chat_id = update.effective_chat.id
-
-    # We convert the localized time to UTC for the scheduler.
     utc_reminder_time = reminder_time.astimezone(timezone('UTC'))
 
-    # Create a unique job name
-    job_name = f"reminder_{chat_id}_{event_name}_{datetime.now().timestamp()}"
+    # Sanitize event name for a safe job name
+    safe_event_name = "".join(c if c.isalnum() else '_' for c in event_name)
+    job_name = f"reminder_{chat_id}_{safe_event_name}_{int(datetime.now().timestamp())}"
 
-    # Dictionary with data for the reminder
     job_data = {
         'chat_id': chat_id,
         'event_name': event_name,
-        'event_time_str': event_time.strftime("%Y-%m-%d %H:%M")
+        'event_time_str': event_time.strftime("%Y-%m-%d %H:%M"),
+        'reminder_time_utc_iso': utc_reminder_time.isoformat(),
+        'job_name': job_name
     }
 
     # Schedule the job
@@ -167,20 +161,22 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         name=job_name
     )
 
-    # Track the job name for the user
-    if chat_id not in USER_JOBS:
-        USER_JOBS[chat_id] = []
-    USER_JOBS[chat_id].append(job_name)
+    # Store in Firebase
+    try:
+        ref = db.reference(f'jobs/{chat_id}/{job_name}')
+        ref.set(job_data)
+        logger.info(f"Stored job '{job_name}' in Firebase.")
+    except Exception as e:
+        logger.error(f"Firebase Error storing job '{job_name}': {e}")
+        await update.message.reply_text("⚠️ Reminder scheduled, but failed to save permanently.")
 
-    # 4. Send Confirmation
+    # 4. Send confirmation
     await update.message.reply_html(
         f"✅ <b>Task scheduled!</b>\n"
         f"Event: <b>{event_name}</b>\n"
         f"Event Time: {event_time.strftime('%Y-%m-%d %H:%M')}\n"
         f"Reminder will arrive: {reminder_time.strftime('%Y-%m-%d %H:%M')}"
     )
-
-    # End the conversation
     return ConversationHandler.END
 
 
@@ -195,72 +191,106 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # 4. Reminder and Listing Functionality
 
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """The function called by JobQueue to send the reminder."""
+    """Sends the reminder and removes the job from Firebase."""
     job_data = context.job.data
     chat_id = job_data['chat_id']
-    event_name = job_data['event_name']
-    event_time_str = job_data['event_time_str']
+    job_name = job_data.get('job_name')
 
-    # Remove the job from tracking list after it executes (optional, for cleanup)
-    if chat_id in USER_JOBS and context.job.name in USER_JOBS[chat_id]:
-        USER_JOBS[chat_id].remove(context.job.name)
+    # Remove from Firebase
+    if job_name:
+        try:
+            db.reference(f'jobs/{chat_id}/{job_name}').delete()
+            logger.info(f"Deleted job '{job_name}' from Firebase.")
+        except Exception as e:
+            logger.error(f"Firebase Error deleting job '{job_name}': {e}")
 
     await context.bot.send_message(
         chat_id=chat_id,
         text=f"🔔 <b>REMINDER!</b>\n"
-             f"The event <b>'{event_name}'</b> is scheduled for {event_time_str}.",
+             f"The event <b>'{job_data['event_name']}'</b> is scheduled for {job_data['event_time_str']}.",
         parse_mode="HTML"
     )
-    logger.info(f"Sent reminder for chat {chat_id} about event '{event_name}'.")
+    logger.info(f"Sent reminder for chat {chat_id} about event '{job_data['event_name']}'.")
 
 
 async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Displays all currently scheduled tasks for the user."""
+    """Displays all scheduled tasks for the user from Firebase."""
     chat_id = update.effective_chat.id
 
-    # Check if the user has any tracked jobs
-    if chat_id not in USER_JOBS or not USER_JOBS[chat_id]:
-        await update.message.reply_text("🚫 You have no scheduled tasks. Create a new one using /new.")
+    try:
+        jobs_ref = db.reference(f'jobs/{chat_id}')
+        jobs = jobs_ref.get()
+    except Exception as e:
+        logger.error(f"Firebase Error fetching jobs for chat {chat_id}: {e}")
+        await update.message.reply_text("❌ Could not retrieve your tasks.")
         return
 
-    # Get all active jobs from the JobQueue based on the tracked names
-    all_jobs = []
-    for job_name in USER_JOBS[chat_id]:
-        jobs = context.application.job_queue.get_jobs_by_name(name=job_name)
-        if jobs:
-            all_jobs.extend(jobs)
-
-    if not all_jobs:
-        await update.message.reply_text(
-            "✅ Your tasks list is empty. All scheduled reminders might have already been sent.")
-        USER_JOBS[chat_id] = []  # Clear the list if all jobs are finished/missing
+    if not jobs:
+        await update.message.reply_text("🚫 You have no scheduled tasks. Create one using /new.")
         return
 
     response = "🗓️ <b>Your Scheduled Tasks:</b>\n\n"
+    sorted_jobs = sorted(jobs.values(), key=lambda j: j.get('reminder_time_utc_iso', ''))
 
-    for job in all_jobs:
-        # Check if the job belongs to this user (extra safety check)
-        if job.data['chat_id'] == chat_id:
-            event_name = job.data['event_name']
-            event_time = job.data['event_time_str']
-            # Get the scheduled reminder time (job.next_t is the next run time)
-            local_reminder_time = job.next_t.astimezone(USER_TIMEZONE)
-            reminder_time_str = local_reminder_time.strftime("%Y-%m-%d %H:%M:%S")
+    for job in sorted_jobs:
+        event_name = job.get('event_name', 'N/A')
+        event_time = job.get('event_time_str', 'N/A')
 
-            response += (
-                f"<b>{event_name}</b>\n"
-                f"  📅 Event: {event_time}\n"
-                f"  🔔 Reminder: {reminder_time_str}\n\n"
-            )
+        try:
+            utc_reminder = datetime.fromisoformat(job['reminder_time_utc_iso'])
+            local_reminder = utc_reminder.astimezone(USER_TIMEZONE)
+            reminder_time_str = local_reminder.strftime("%Y-%m-%d %H:%M:%S")
+        except (KeyError, ValueError):
+            reminder_time_str = "Invalid date"
+
+        response += (
+            f"<b>{event_name}</b>\n"
+            f"  📅 Event: {event_time}\n"
+            f"  🔔 Reminder: {reminder_time_str}\n\n"
+        )
 
     await update.message.reply_html(response)
 
 
 # 5. Main Execution
+def reschedule_jobs(application: Application) -> None:
+    """Reschedules all jobs from Firebase that are still in the future."""
+    try:
+        all_jobs_ref = db.reference('jobs')
+        all_jobs = all_jobs_ref.get()
+
+        if not all_jobs:
+            logger.info("No jobs in Firebase to reschedule.")
+            return
+
+        for chat_id, jobs in all_jobs.items():
+            for job_name, job_data in jobs.items():
+                utc_reminder_time = datetime.fromisoformat(job_data['reminder_time_utc_iso'])
+
+                # Reschedule if the job is in the future
+                if utc_reminder_time > datetime.now(timezone('UTC')):
+                    application.job_queue.run_once(
+                        callback=send_reminder,
+                        when=utc_reminder_time,
+                        data=job_data,
+                        name=job_name
+                    )
+                    logger.info(f"Rescheduled job '{job_name}' for chat {chat_id}.")
+                else:
+                    # If the job is in the past, remove it
+                    db.reference(f'jobs/{chat_id}/{job_name}').delete()
+                    logger.info(f"Removed past job '{job_name}' for chat {chat_id}.")
+
+    except Exception as e:
+        logger.error(f"Firebase Error during job rescheduling: {e}")
 
 def main() -> None:
     """Starts the bot."""
-
+    # Initialize Firebase
+    cred = credentials.Certificate(os.environ.get("FIREBASE_SERVICE_ACCOUNT_KEY_PATH"))
+    firebase_admin.initialize_app(cred, {
+        'databaseURL': os.environ.get("FIREBASE_DATABASE_URL")
+    })
     # Retrieve token from environment variable (Best Practice)
     TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
@@ -271,6 +301,7 @@ def main() -> None:
 
     # Create the Application instance
     application = Application.builder().token(TOKEN).build()
+    reschedule_jobs(application)
 
     # ConversationHandler for the multi-step task creation
     conv_handler = ConversationHandler(
