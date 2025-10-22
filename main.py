@@ -1,5 +1,6 @@
 import logging
 import os
+import json
 from datetime import datetime, timedelta
 from typing import Union, List, Dict
 from pytz import timezone
@@ -287,17 +288,19 @@ def reschedule_jobs(application: Application) -> None:
 def main() -> None:
     """Starts the bot."""
     # Initialize Firebase
-    firebase_service_account_key_path = os.environ.get("FIREBASE_SERVICE_ACCOUNT_KEY_PATH")
+    firebase_service_account_key_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT_KEY_JSON")
     firebase_database_url = os.environ.get("FIREBASE_DATABASE_URL")
 
-    if not firebase_service_account_key_path:
-        logger.error("FIREBASE_SERVICE_ACCOUNT_KEY_PATH environment variable not set.")
+    if not firebase_service_account_key_json:
+        logger.error("FIREBASE_SERVICE_ACCOUNT_KEY_JSON environment variable not set.")
         return
     if not firebase_database_url:
         logger.error("FIREBASE_DATABASE_URL environment variable not set.")
         return
 
-    cred = credentials.Certificate(firebase_service_account_key_path)
+    cred_dict = json.loads(firebase_service_account_key_json)
+    cred = credentials.Certificate(cred_dict)
+
     firebase_admin.initialize_app(cred, {
         'databaseURL': firebase_database_url
     })
