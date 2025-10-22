@@ -142,8 +142,9 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         )
         return GET_REMINDER_OFFSET
 
-        # 3. Plan the Reminder (JobQueue)
+    # 3. Plan the Reminder (JobQueue)
     event_name: str = context.user_data["event_name"]
+    chat_id = update.effective_chat.id
 
     # We convert the localized time to UTC for the scheduler.
     utc_reminder_time = reminder_time.astimezone(timezone('UTC'))
@@ -159,14 +160,14 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     }
 
     # Schedule the job
-    context.job_queue.run_once(
+    context.application.job_queue.run_once(
         callback=send_reminder,
         when=utc_reminder_time,
         data=job_data,
         name=job_name
     )
 
-    # 🌟 Track the job name for the user
+    # Track the job name for the user
     if chat_id not in USER_JOBS:
         USER_JOBS[chat_id] = []
     USER_JOBS[chat_id].append(job_name)
