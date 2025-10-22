@@ -300,6 +300,7 @@ def main() -> None:
 
     cred_dict = json.loads(firebase_service_account_key_json)
     cred = credentials.Certificate(cred_dict)
+
     firebase_admin.initialize_app(cred, {
         'databaseURL': firebase_database_url
     })
