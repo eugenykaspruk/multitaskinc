@@ -287,9 +287,19 @@ def reschedule_jobs(application: Application) -> None:
 def main() -> None:
     """Starts the bot."""
     # Initialize Firebase
-    cred = credentials.Certificate(os.environ.get("FIREBASE_SERVICE_ACCOUNT_KEY_PATH"))
+    firebase_service_account_key_path = os.environ.get("FIREBASE_SERVICE_ACCOUNT_KEY_PATH")
+    firebase_database_url = os.environ.get("FIREBASE_DATABASE_URL")
+
+    if not firebase_service_account_key_path:
+        logger.error("FIREBASE_SERVICE_ACCOUNT_KEY_PATH environment variable not set.")
+        return
+    if not firebase_database_url:
+        logger.error("FIREBASE_DATABASE_URL environment variable not set.")
+        return
+
+    cred = credentials.Certificate(firebase_service_account_key_path)
     firebase_admin.initialize_app(cred, {
-        'databaseURL': os.environ.get("FIREBASE_DATABASE_URL")
+        'databaseURL': firebase_database_url
     })
     # Retrieve token from environment variable (Best Practice)
     TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
