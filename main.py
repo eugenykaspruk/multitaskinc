@@ -244,12 +244,13 @@ async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             event_name = job.data['event_name']
             event_time = job.data['event_time_str']
             # Get the scheduled reminder time (job.next_t is the next run time)
-            reminder_time = job.next_t.strftime("%Y-%m-%d %H:%M:%S")
+            local_reminder_time = job.next_t.astimezone(USER_TIMEZONE)
+            reminder_time_str = local_reminder_time.strftime("%Y-%m-%d %H:%M:%S")
 
             response += (
                 f"<b>{event_name}</b>\n"
                 f"  📅 Event: {event_time}\n"
-                f"  🔔 Reminder: {reminder_time}\n\n"
+                f"  🔔 Reminder: {reminder_time_str}\n\n"
             )
 
     await update.message.reply_html(response)
