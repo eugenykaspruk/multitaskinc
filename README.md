@@ -1,5 +1,4 @@
 # Multitask Inc
-## Telegram Reminder Bot
 
 This is a simple Telegram bot that allows users to set reminders for events. The bot uses a Google Sheet for data storage.
 
